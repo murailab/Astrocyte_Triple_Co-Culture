@@ -26,7 +26,7 @@ Bulk RNA-seq was performed on astrocytes after they were culture with neurons an
 
 ## The Pipeline  
 
-![](images/pipeline.png){width="593"}
+![](images/pipeline.png|width=100px)
 
 ## This Repository  
 
