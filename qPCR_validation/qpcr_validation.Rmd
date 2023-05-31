@@ -1,0 +1,323 @@
+---
+title: "Validation of RNA-seq by qPCR"
+author: "Todd Farmer"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: true
+output:
+   md_document:
+     variant: markdown_github
+  # html_document:
+  #   df_print: paged
+   # number_sections: yes
+  #   toc: yes
+   #  toc_float: yes
+  #   code_folding: show
+editor_options:
+  chunk_output_type: inline
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE,
+                      echo = FALSE,
+                      warning = FALSE, 
+                      message = FALSE, 
+                      cache.lazy = FALSE, 
+                      dev = c("png"), 
+                      fig.keep = 'high', 
+                      fig.path="figures/", 
+                      fig.show="asis",
+                      fig.dim = c(8,8))
+```
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(plotly)
+```
+  
+
+```{r}
+#' A minimalist ggplot theme
+theme_pub <- function(base_size = 11, base_family = "") {
+  
+  theme_light(base_size = 11, base_family = "") +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank(),
+      strip.background = element_rect(fill = NA, colour = NA),
+      strip.text.x = element_text(colour = "black", size = rel(1.2)),
+      strip.text.y = element_text(colour = "black", size = rel(1.2)),
+      title = element_text(size = rel(0.9)),
+      axis.text = element_text(colour = "black", size = rel(0.8)),
+      axis.title = element_text(colour = "black", size = rel(1.2)),
+      legend.title = element_text(colour = "black", size = rel(0.9)),
+      legend.key.size = unit(0.9, "lines"),
+      legend.text = element_text(size = rel(0.7), colour = "black"),
+      legend.key = element_rect(colour = NA, fill = NA),
+      legend.background = element_rect(colour = NA, fill = NA),
+      panel.border = element_blank(),
+      axis.line = element_line(colour = "black", size = rel(0.7)),
+      axis.ticks = element_line(colour = "black", size = rel(0.7))
+    )
+}
+
+```
+
+
+  
+```{r}
+sample_meta <- read.csv("data/sample_metadata.csv") %>% select(-X) %>%
+  filter(cell_type == "astrocyte") %>%
+  select(sample, culture) %>% 
+  add_row(sample = "EAN_G5", culture = "AEN")
+# sample_meta 
+```
+  
+# Raw qPCR Data  
+Data was filtered for reactions with "Call" == "Pass".   Culture condition was added to each sample to facilitate downstream analysis.  
+  
+```{r}
+# read in qPCR data a fix for downstream analysis  
+qpcr <- read_xlsx("data/qPCR_Table Results_working excel.xlsx", sheet = 2, skip = 11, )  %>%
+  filter(Call == "Pass", ) %>%
+  rename(sample = Name...2,
+         Sample_Type = Type...3,
+         Target = Name...5,
+         Test_Type = Type...6,
+         Ct_Value = Value
+         ) %>% 
+  mutate(sample = replace(sample, sample == "AN_3", "AN_G3")) %>%
+  left_join(sample_meta , by = "sample") %>%
+  mutate(culture = case_when(culture == "EA" ~ "AE",
+                             culture == "EAN" ~ "AEN",
+                             TRUE ~ as.character(culture))) %>% 
+  relocate(ID, sample, culture)
+  
+qpcr[qpcr["sample"] == "Mouse", "culture"] = "Mouse"
+
+qpcr["Target"] <- str_to_title(qpcr$Target)
+
+qpcr[qpcr["Target"] == "Egfp",]["Target"] <- "eGFP"
+  
+# qpcr 
+```
+  
+```{r}
+# read in existing RNA-seq data  
+rna_seq <- read.csv("~/Murai Lab Cloud Dropbox/Todd_Farmer-Team_Folder/Projects_Todd/Astro_EAN_final/DEGs_allGenes_allStats.csv") %>%
+  filter(gene %in% unique(qpcr[["Target"]])) %>% 
+  select(gene, log2FoldChange_A_AN, log2FoldChange_A_AE, log2FoldChange_A_AEN) %>%
+  rename("Target" = gene) %>%
+  pivot_longer(!Target, names_to = "culture", values_to = "seq_lfc") %>% 
+  mutate(culture = str_extract(culture, "[^_]+$"))
+# rna_seq
+```
+
+
+## Data Points without Corresponding Culture Condition  
+These are samples that are not among the original sample set that were used for RNA-seq. Note the inclusion of the blank samples for the target Srp68. This indicates that the Srp68 primers amplify without template. Possible primer-dimer amplification. The Srp68 reactions should be excluded.  
+  
+  
+```{r}
+qpcr %>% filter(is.na(culture))
+  
+```
+  
+ 
+  
+```{r}
+qpcr_summary <- qpcr %>%
+  filter(!is.na(culture)) %>%
+  group_by(sample, Target) %>% summarise(mean_Ct = mean(Ct_Value),
+                                                sd = sd(Ct_Value)) %>%
+   left_join(sample_meta , by = "sample")
+qpcr_summary[qpcr_summary["sample"] == "Mouse", "culture"] = "Mouse"
+# qpcr_summary
+```
+
+  
+
+  
+```{r}
+ref_targets <- c("HarsS2", "Srbd1", "Srp68") #
+
+calibrator <- qpcr_summary %>% filter(Target %in% ref_targets) %>%
+  group_by(sample) %>%
+  summarise(calibrator_Ct = mean(mean_Ct))
+# calibrator
+```
+ 
+
+  
+```{r}
+
+qpcr_summary <- qpcr_summary %>% left_join(calibrator, by = "sample") %>% mutate(delta_Ct = calibrator_Ct - mean_Ct)
+# qpcr_summary
+```
+  
+ 
+
+
+```{r}
+con_Ct <- qpcr_summary %>% filter(culture == "A") %>% group_by(Target) %>% summarise(mean_con_dCt = mean(delta_Ct))
+# con_Ct
+```
+  
+## Summary of qPCR Data 
+This table contains the mean values for each culture condition and target. The key value is ddCt with is equivalent to log2 fold change. It is ddCt that will be compared to the RNA-seq estimated log2 fold changes.  
+```{r}
+
+qpcr_summary <- qpcr_summary %>% left_join(con_Ct, by = "Target") %>% mutate(ddCt = delta_Ct - mean_con_dCt)
+qpcr_summary
+```
+ 
+# Boxplot of A vs. EAN   
+  
+```{r qPCR_boxplot}
+ggplot(qpcr_summary %>% filter(culture %in% c("A", "AEN")), aes(x=Target, y= ddCt, fill=culture)) +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+  
+```
+
+  
+# Correlation with RNA-seq Data
+  
+```{r}
+corr_data <- qpcr_summary %>% filter(culture %in% c( "AN", "AE", "AEN")) %>% group_by(culture, Target) %>% summarise(mean_ddCt = mean(ddCt)) %>% full_join(rna_seq, by = c("culture", "Target")) 
+# corr_data 
+```
+  
+## AN Fit 
+  
+```{r}
+fit <- lm(data = corr_data, mean_ddCt ~ seq_lfc)
+an_fit <- lm(data = corr_data %>% filter(culture == "AN"), mean_ddCt ~ seq_lfc)
+ea_fit <- lm(data = corr_data %>% filter(culture == "AE"), mean_ddCt ~ seq_lfc)
+ean_fit <- lm(data = corr_data %>% filter(culture == "AEN"), mean_ddCt ~ seq_lfc)
+summary(an_fit)
+
+```
+  
+## EA Fit 
+  
+```{r}
+summary(ea_fit)
+
+```
+  
+## EAN Fit 
+  
+```{r}
+summary(ean_fit)
+```
+
+
+```{r}
+# corr_data <- cbind(corr_data, residuals = fit$residual) 
+```
+  
+# Plot of Correlation between RNA-seq and qPCR  
+
+
+```{r qPCR_RNA-seq_correlation}
+# pdf("figures/qPCR.pdf")
+ggplot(data = corr_data, aes(y=seq_lfc, x=mean_ddCt, color=culture)) +
+  geom_point() + 
+  geom_smooth(method='lm') + 
+  ggtitle("Validation of RNA-seq by qPCR") + 
+  xlab("qPCR (ddCt)") +
+  ylab("RNA-Seq (estimated log2 fold change)") + theme_pub()
+# dev.off()
+```
+  
+## Interactive Plot  
+```{r}
+fig <- plot_ly(data = corr_data, x = ~mean_ddCt, y = ~seq_lfc, type = "scatter", mode   = 'markers',
+  # Hover text:
+  text = ~paste('Target: ', Target,'<br>culture: ', culture,'<br>ddCt: ', mean_ddCt, '<br>RNA-Seq:', seq_lfc),
+  color = ~culture
+) %>%
+  layout(title = 'Validation of RNA-seq by qPCR', xaxis = list(title = 'qPCR (ddCt)'), 
+         yaxis = list(title = 'RNA-Seq (estimated log2 fold change)'), legend = list(title=list(text='<b> Pure Astros vs. </b>')))
+
+fig
+
+```
+  
+## Correlation Data  
+  
+```{r}
+corr_data
+```
+
+# Correlation of RT-qPCR to uncorrected LFC from RNA-seq data  
+
+```{r}
+# read in existing RNA-seq data  
+uncor_rna_seq <- read.csv("~/Murai Lab Cloud Dropbox/Todd_Farmer-Team_Folder/Projects_Todd/Astro_EAN_final/uncorrected_DEGs.csv") %>%
+  filter(gene %in% unique(qpcr[["Target"]])) %>% 
+  select(gene, log2FoldChange_A_AN, log2FoldChange_A_AE, log2FoldChange_A_AEN) %>%
+  rename("Target" = gene) %>%
+  pivot_longer(!Target, names_to = "culture", values_to = "seq_lfc") %>% 
+  mutate(culture = str_extract(culture, "[^_]+$"))
+uncor_rna_seq 
+```
+
+# Correlation with uncorrected RNA-seq Data
+  
+```{r}
+uncor_corr_data <- qpcr_summary %>% filter(culture %in% c( "AN", "AE", "AEN")) %>% group_by(culture, Target) %>% summarise(mean_ddCt = mean(ddCt)) %>% full_join(uncor_rna_seq, by = c("culture", "Target")) 
+# uncor_corr_data 
+```
+
+## AN Fit 
+  
+```{r}
+fit <- lm(data = uncor_corr_data, mean_ddCt ~ seq_lfc)
+an_fit <- lm(data = uncor_corr_data %>% filter(culture == "AN"), mean_ddCt ~ seq_lfc)
+ea_fit <- lm(data = uncor_corr_data %>% filter(culture == "AE"), mean_ddCt ~ seq_lfc)
+ean_fit <- lm(data = uncor_corr_data %>% filter(culture == "AEN"), mean_ddCt ~ seq_lfc)
+summary(an_fit)
+
+```
+  
+## EA Fit 
+  
+```{r}
+summary(ea_fit)
+
+```
+  
+## EAN Fit 
+  
+```{r}
+summary(ean_fit)
+```
+
+
+```{r}
+# corr_data <- cbind(corr_data, residuals = fit$residual) 
+```
+  
+# Plot of Correlation between RNA-seq and qPCR using uncorrected RNA-seq estimations   
+  
+```{r qPCR_correlation_noCorrection}
+# pdf("figures/qPCR.pdf")
+ggplot(data = uncor_corr_data, aes(y=seq_lfc, x=mean_ddCt, color=culture)) +
+  geom_point() + 
+  geom_smooth(method='lm') + 
+  ggtitle("Validation of RNA-seq by qPCR (no endo contam correction)") + 
+  xlab("qPCR (ddCt)") +
+  ylab("RNA-Seq (estimated log2 fold change)") + theme_pub()
+# dev.off()
+```
+  
+# Environment  
+  
+```{r}
+sessionInfo()
+```  
+  
