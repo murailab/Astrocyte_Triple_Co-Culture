@@ -30,7 +30,7 @@ Folders:
 
 sargasso_alignment - the scripts used to run species filtering alignment and gene counts
 
-differential-gene-expression - contains the scripts and notebooks to perform differential gene expression analysis, gene ontology analysis, and gene set enrichment analysis  
+differential_gene_expression - contains the scripts and notebooks to perform differential gene expression analysis, gene ontology analysis, and gene set enrichment analysis  
   
 qPCR_validation - notebook for the correlation of estimated log fold changes from RNA-seq to measured log fold changes from qPCR   
 
